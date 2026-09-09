@@ -7,46 +7,41 @@
 
 Adopt a declarative preferences package into the NativeScript org as `@nativescript/preferences`.
 
-An app describes its settings once in a JSON file. A `before-prepare` hook generates the iOS `Settings.bundle`, the Android `PreferenceScreen` XML, and a typed TypeScript module, all reading the same native store. No plist or XML is written by hand, and no native code is involved.
+An app describes its settings once, in `app/app.preferences.ts`, with `definePreferences({ items })`. The keys and value types are inferred from that literal, and the same file is the typed runtime instance. A `before-prepare` hook evaluates the file under Node, the way the CLI reads `nativescript.config.ts`, and generates the iOS `Settings.bundle` and the Android `PreferenceScreen` XML from it. No plist or XML is written by hand, no native code, and no generated TypeScript.
 
-A working implementation ships today as [`nativescript-preferences`](https://github.com/sitefinitysteve/nativescript-preferences) (Apache-2.0). I am offering to transfer it to the org and keep maintaining it.
+A working implementation ships today as [`nativescript-preferences`](https://github.com/sitefinitysteve/nativescript-preferences) (Apache-2.0): 3.0 is the TypeScript definition described here, 2.x is the JSON form this RFC first proposed, and both are supported. I am offering to transfer it to the org and keep maintaining it.
 
 # Basic example
 
-`preferences.json`:
-
-```json
-{
-  "$schema": "node_modules/@nativescript/preferences/preferences.schema.json",
-  "output": { "typescript": "app/settings.generated.ts" },
-  "items": [
-    {
-      "type": "group",
-      "title": "General",
-      "items": [
-        { "key": "enabled", "type": "toggle", "title": "Enabled", "default": true },
-        {
-          "key": "theme",
-          "type": "list",
-          "title": "Theme",
-          "default": "system",
-          "options": ["system", "light", "dark"]
-        },
-        { "key": "volume", "type": "slider", "title": "Volume", "default": 50, "min": 0, "max": 100 }
-      ]
-    }
-  ]
-}
-```
-
-That produces a page in the iOS Settings app, an AndroidX preference screen, and:
+`app/app.preferences.ts`:
 
 ```ts
-import { settings } from './settings.generated';
+import { definePreferences } from '@nativescript/preferences';
+
+export default definePreferences({
+  items: [
+    {
+      type: 'group',
+      title: 'General',
+      items: [
+        { key: 'enabled', type: 'toggle', title: 'Enabled', default: true },
+        { key: 'theme', type: 'list', title: 'Theme', default: 'system', options: ['system', 'light', 'dark'] },
+        { key: 'volume', type: 'slider', title: 'Volume', default: 50, min: 0, max: 100 },
+      ],
+    },
+  ],
+});
+```
+
+That produces a page in the iOS Settings app, an AndroidX preference screen, and, with no `as const` and no generated file:
+
+```ts
+import settings from './app.preferences';
 
 settings.get('theme');            // 'system' | 'light' | 'dark', never undefined
 settings.set('volume', 80);       // NSUserDefaults / SharedPreferences
 settings.set('enabled', 'yes');   // compile error
+settings.definition;              // the literal above
 settings.onChange('theme', applyTheme);
 await settings.openSettings();
 ```
@@ -60,7 +55,7 @@ The instance is an `Observable`, so a hand-built screen binds to the same values
 
 Package paths and the XML namespace throughout this RFC use the proposed `@nativescript/preferences` name. The shipping package is `nativescript-preferences`; the rename is part of this proposal.
 
-Both screens below come from the demo app's single [`preferences.json`](https://github.com/sitefinitysteve/nativescript-preferences/blob/master/demo/preferences.json):
+Both screens below come from the demo app's single [`app.preferences.ts`](https://github.com/sitefinitysteve/nativescript-preferences/blob/master/demo/app/app.preferences.ts):
 
 | iOS, in the Settings app | Android, an AndroidX `PreferenceScreen` |
 | --- | --- |
@@ -100,7 +95,7 @@ The package has three parts.
 
 ## 1. `Preferences<Schema>`, the runtime
 
-A typed wrapper over `NSUserDefaults` (iOS) and `SharedPreferences` (Android), usable with or without the generator:
+A typed wrapper over `NSUserDefaults` (iOS) and `SharedPreferences` (Android). `definePreferences` constructs it from a definition; it can also be constructed directly:
 
 ```ts
 import { Preferences } from '@nativescript/preferences';
@@ -129,7 +124,7 @@ export const settings = new Preferences<Settings>({
 | `ios` / `android` | The underlying `NSUserDefaults` / `SharedPreferences`. |
 | `dispose()` | Stop observing native changes. |
 
-A typed schema requires a default for every key, which is what allows `get()` to be typed as always returning a value.
+A typed schema requires a default for every key, which is what allows `get()` to be typed as always returning a value. `definePreferences` derives those defaults from the definition (an omitted `text` default is `''`, `toggle` `false`, `multilist` `[]`, `slider` its `min`; a `list` default is required and must be one of its options), lists every `slider` as an integer key, and keeps the definition reachable as `settings.definition`.
 
 A read resolves to the stored value, else a registered default. On iOS the shared store registers the in-code defaults and then the `Settings.bundle` defaults, so where the two disagree the bundle value wins, which is also what the Settings app displays. On Android there is no registration domain; `preferences.xml` defaults apply only when the app calls `registerDefaults()`, which fills in keys that have no stored value yet. With the generator every default comes from the same JSON, so this only matters for a hand-written bundle.
 
@@ -141,9 +136,13 @@ The instance extends `Observable`, which is what makes two-way XML bindings work
 
 **iOS system keys.** iOS writes its own entries into the same defaults domain (`AppleLanguages`, `NSHyphenatesAsLastResort`, and others). Only declared keys come out of the registration domain, and system-shaped keys are filtered from the persistent domain, so `keys()`, `getAll()` and the global change event see app preferences only.
 
-## 2. The generator, CLI and build hook
+## 2. The definition, the generator and the build hook
 
-`preferences.json` is validated by a published JSON Schema, so editors give completion and inline errors. The item types:
+`definePreferences<const D extends PreferencesDefinition>(definition: D & ValidatePreferencesDefinition<D>): Preferences<InferPreferences<D>>`. The `const` type parameter keeps the literal types; `InferPreferences` flattens nested groups and screens and maps each stored key to its value type; `ValidatePreferencesDefinition` narrows a `list` default to that item's own options and turns an unknown property such as `titel` into an error. Requires TypeScript 5.3 (verified through 7.0).
+
+The hook reads the same file under Node with `ts.transpileModule`, exactly as the CLI reads `nativescript.config.ts`, and runs the output with a `require` that stubs `@nativescript/preferences` to return the definition untouched. Relative `.ts` / `.js` helpers go through the same loader; any other import is rejected with a message, since the file also runs in the app. `typescript` is resolved from the project when it has the compiler API (5.3 to 6.x), else from the CLI's own copy, since TypeScript 7 no longer ships that API. The plain object then goes through the same validation as JSON did, and every error names the item.
+
+A `preferences.json` with a published JSON Schema is still accepted, and for it the generator also emits the typed module 2.x users have. The item types:
 
 | `type` | Stores | iOS | Android |
 | --- | --- | --- | --- |
@@ -164,20 +163,21 @@ Outputs:
 | --- | --- |
 | iOS bundle, one plist per screen | `App_Resources/iOS/Settings.bundle/` |
 | Android screen and string arrays | `App_Resources/Android/src/main/res/xml/preferences.xml`, `values/preferences_arrays.xml` |
-| Interface, defaults, `settings` instance | `output.typescript` |
 
-The hook is a standard `before-prepare` entry in `nativescript.config.ts`, so every `ns run`, `ns build` and `ns prepare` regenerates. `npx ns-preferences generate` runs it directly, `check` exits 1 on stale generated output for CI, and `init` scaffolds the config and registers the hook.
+The definition file is the typed module, so nothing else is generated for it. Generated files name the file they came from in their header.
+
+The hook is a standard `before-prepare` entry in `nativescript.config.ts`, so every `ns run`, `ns build` and `ns prepare` regenerates. It finds `app.preferences.ts` in the app folder (`appPath` from the config, else `src`, else `app`) or the project root, then falls back to `preferences.json`; two present at once is an error, so two sources can never disagree. `npx ns-preferences generate` runs it directly, `check` exits 1 on stale generated output for CI, and `init` scaffolds the definition and registers the hook.
 
 **Per-platform overrides.** Any item takes an `ios` or `android` object. `false` hides the item on that platform. `widget` swaps the control. Anything else is written verbatim as a plist key or an XML attribute, and `null` removes one:
 
-```json
+```ts
 {
-  "key": "theme",
-  "type": "list",
-  "default": "system",
-  "options": ["system", "light", "dark"],
-  "ios": { "widget": "PSRadioGroupSpecifier" },
-  "android": { "widget": "DropDownPreference", "android:icon": "@drawable/ic_theme" }
+  key: 'theme',
+  type: 'list',
+  default: 'system',
+  options: ['system', 'light', 'dark'],
+  ios: { widget: 'PSRadioGroupSpecifier' },
+  android: { widget: 'DropDownPreference', 'android:icon': '@drawable/ic_theme' },
 }
 ```
 
@@ -185,7 +185,7 @@ The generator accepts any non-empty `widget` string without checking it against 
 
 Two iOS layout rules are applied automatically. A `PSRadioGroupSpecifier` is emitted last within its group, because iOS renders it as its own section and would otherwise reorder the surrounding rows. A `screen` sharing a group with other rows gets its own card instead of inheriting their footer text. `generate` prints a note when it moves something.
 
-**Ownership and escape hatches.** Generated files carry a "Do not edit" header. Strip the header and that file is never touched again; `generate --force` reclaims it. `"output": { "android": false }` turns off an output entirely. `NS_PREFERENCES_SKIP=1` skips one build, and removing the hook entry stops it permanently. Pre-existing hand-written `Root.plist` or `preferences.xml` files are left alone on first run. Only changed files are written.
+**Ownership and escape hatches.** Generated files carry a "Do not edit" header. Strip the header and that file is never touched again; `generate --force` reclaims it. `output: { android: false }` turns off an output entirely. `NS_PREFERENCES_SKIP=1` skips one build, and removing the hook entry stops it permanently. Pre-existing hand-written `Root.plist` or `preferences.xml` files are left alone on first run. Only changed files are written.
 
 ## 3. `PreferencesView`, the Android host
 
@@ -217,7 +217,11 @@ On iOS both read the same `NSUserDefaults`, so an existing app's values are alre
 
 **The schema is a common denominator.** iOS has no multi-select control, and Android's `SeekBarPreference` differs from an iOS slider in look and behaviour. Per-platform overrides cover these cases, at the cost of putting platform detail back into the JSON.
 
-**It is another concept to teach.** A new file, a new generated artifact, and a new API next to one that already exists.
+**The definition runs in two runtimes.** The hook evaluates `app.preferences.ts` under Node and the app evaluates it again on device. That is why it has to stay self-contained and deterministic: no app imports, no `@nativescript/*`, no environment checks. The loader enforces the imports and the docs state the rest, but a definition that computes its items differently in the two places would generate one screen and run another.
+
+**It raises the TypeScript floor.** The typings use `const` type parameters, so consumers need TypeScript 5.3 or newer, `preferences.json` users included. Reading the file at build time also needs the compiler API that TypeScript 7 dropped, which the hook works around by using the CLI's own `typescript`.
+
+**It is another concept to teach.** A new file and a new API next to one that already exists.
 
 **It does not have to be in the org.** Everything here works as a community plugin today, and the team could reasonably decline on that basis. Adopting it would change which path developers default to. It would not add a capability that is missing today. Whether that trade is worth an org-maintained package is a judgement the core team is better placed to make than I am.
 
@@ -229,7 +233,7 @@ On iOS both read the same `NSUserDefaults`, so an existing app's values are alre
 
 **Generator only, in the CLI.** `ns preferences generate`, in the shape of the landed `ns fonts` RFC, with no runtime piece. Most of the generator's value is in the TypeScript module it emits alongside the native files; without that, the JSON is one more copy of the same list.
 
-**Define settings in TypeScript instead of JSON.** Better authoring, and types without a generation step. It does not work for the hook, which runs in Node before the app is compiled and would have to execute user TypeScript to read the config. JSON with `$schema` gives most of the editing experience without that.
+**Describe settings in JSON.** The first version of this RFC proposed `preferences.json` with a JSON Schema for completion, generating a typed module alongside the native files. It avoids evaluating user code at build time. It was dropped as the primary form on review: the CLI already evaluates `nativescript.config.ts` the same way, and JSON leaves the types one generation step away from the source, so a `list` default outside its options is a build error rather than a compile error. JSON is still accepted for existing projects.
 
 **Document the manual path properly.** Write a guide on hand-writing both platforms. This is the cheapest option and it is what exists today.
 
@@ -237,7 +241,7 @@ On iOS both read the same `NSUserDefaults`, so an existing app's values are alre
 
 This is additive. Nothing in core changes, no existing API is deprecated, and nothing breaks.
 
-**Existing apps.** `ns plugin add @nativescript/preferences`, then `npx ns-preferences init`. On iOS, keys already in `NSUserDefaults` are picked up as they are. On Android, values written through `ApplicationSettings` live in a different file and need either `Preferences.applicationSettings` or a one-time migration. That needs to be prominent in the docs, because it is the one case where an app can silently read a stale value.
+**Existing apps.** `ns plugin add @nativescript/preferences`, then `npx ns-preferences init`. Requires TypeScript 5.3 or newer. On iOS, keys already in `NSUserDefaults` are picked up as they are. On Android, values written through `ApplicationSettings` live in a different file and need either `Preferences.applicationSettings` or a one-time migration. That needs to be prominent in the docs, because it is the one case where an app can silently read a stale value.
 
 Apps with a hand-written `Settings.bundle` or `preferences.xml` keep them, since the first run leaves existing files alone. Migration can be done one screen at a time.
 
@@ -254,6 +258,7 @@ Apps with a hand-written `Settings.bundle` or `preferences.xml` keep them, since
 - **Where should it live?** A standalone repo under the org, or the plugins monorepo.
 - **Does the runtime belong in core?** `Preferences` could live in `@nativescript/core` as the successor to `ApplicationSettings`, leaving the generator and `PreferencesView` in the plugin. That splits one API across two packages, but keeps `androidx.preference` and the generator out of core. My preference is to keep all of it in the plugin, without a strong argument either way.
 - **CLI surface.** Whether this should be `ns preferences generate` instead of `npx ns-preferences generate`, which would need a CLI change.
+- **A shared loader for TypeScript config files.** The CLI reads `nativescript.config.ts` with `ts.transpileModule`, and this hook does the same for `app.preferences.ts`. TypeScript 7 removed that API. One CLI-owned loader, exposed to hooks, would keep both working with one fix instead of two.
 - **Android entry point.** `openSettings()` navigating a `Frame` is convenient but makes assumptions about navigation. `PreferencesView` is the more composable primitive. Which one the docs should lead with is open.
 - **Multiple suites.** One config file currently describes one store. Apps with a widget or an extension may want several suites described together.
 - **iOS bundle caching.** Whether the CLI could detect a changed `Settings.bundle` and prompt for a reinstall, instead of leaving it to the README.
