@@ -9,7 +9,7 @@ Adopt a declarative preferences package into the NativeScript org as `@nativescr
 
 An app describes its settings once, in `app/app.preferences.ts`, with `definePreferences({ items })`. The keys and value types are inferred from that literal, and the same file is the typed runtime instance. A `before-prepare` hook evaluates the file under Node, the way the CLI reads `nativescript.config.ts`, and generates the iOS `Settings.bundle` and the Android `PreferenceScreen` XML from it. No plist or XML is written by hand, no native code, and no generated TypeScript.
 
-A working implementation ships today as [`nativescript-preferences`](https://github.com/sitefinitysteve/nativescript-preferences) (Apache-2.0): 3.0 is the TypeScript definition described here, 2.x is the JSON form this RFC first proposed, and both are supported. I am offering to transfer it to the org and keep maintaining it.
+A working implementation ships today as [`nativescript-preferences`](https://github.com/sitefinitysteve/nativescript-preferences) (Apache-2.0): 2.1 is the TypeScript definition described here, 2.0 is the JSON form this RFC first proposed, and both are supported. I am offering to transfer it to the org and keep maintaining it.
 
 # Basic example
 
